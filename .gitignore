@@ -1,0 +1,81 @@
+# --------------------------------------------------
+# Linux kernel build artifacts (for main tree)
+# --------------------------------------------------
+#
+# Common build directories
+# *
+!*/
+!.gitignore
+!.config
+
+# Kbuild output
+*.o
+*.ko
+*.mod
+*.mod.c
+*.symtypes
+*.order
+*.markers
+*.gcno
+*.gcda
+*.d
+
+# Assembly output
+*.s
+*.S
+
+# Generated DTBs and overlays
+*.dtb
+*.dtbo
+
+# Kernel images
+bzImage
+vmlinux
+vmlinuz
+Image
+Image.gz
+Image.lz4
+Image.xz
+Image.zst
+arch/*/boot/Image*
+arch/*/boot/bzImage*
+
+# Modules
+modules.builtin
+modules.builtin.modinfo
+modules.order
+Module.symvers
+
+# Build system artifacts
+*.cmd
+.tmp_versions/
+.build-id/
+linux*
+*.unsigned
+
+# Tags and cscope
+tags
+TAGS
+cscope.*
+*.patch
+*.orig
+*.rej
+
+# Other
+*.log
+*.swp
+*~
+
+# Clang LTO and BPF
+*.lto.o
+*.bpf.o
+
+# Coverage files
+*.gcov
+
+# Kconfig fragments
+.config.old
+.config.cmd
+.config
+include/config/
+include/generated/
