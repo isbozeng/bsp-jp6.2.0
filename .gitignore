@@ -10,6 +10,14 @@
 
 # Kbuild output
 *.o
+*.a
+.version
+*.map
+*.kallsyms[12]
+*.so
+*.lds
+*.dbg
+*.tmp
 *.ko
 *.mod
 *.mod.c
