@@ -24,10 +24,10 @@
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-
+#include <linux/sysfs.h>
 /*
- * The PCA9541 is a bus master selector. It supports two I2C masters connected
- * to a single slave bus.
+ * The PCA9541/PCA9641 is a bus master selector. It supports two I2C masters
+ * connected to a single slave bus.
  *
  * Before each bus transaction, a master has to acquire bus ownership. After the
  * transaction is complete, bus ownership has to be released. This fits well
@@ -58,14 +58,56 @@
 #define PCA9541_ISTAT_MYTEST	BIT(6)
 #define PCA9541_ISTAT_NMYTEST	BIT(7)
 
+#define PCA9641_ID				0x00
+#define PCA9641_ID_MAGIC		0x38
+
+#define PCA9641_CONTROL			0x01
+#define PCA9641_STATUS			0x02
+#define PCA9641_TIME			0x03
+#define PCA9641_INT_STATUS      0x04
+#define PCA9641_INT_MASK        0x05
+#define PCA9641_REG_DUMP_NUM    0x06
+#define PCA9641_MBOX_LO         0x06
+#define PCA9641_MBOX_HI         0x07
+
+#define PCA9641_CTL_LOCK_REQ			BIT(0)
+#define PCA9641_CTL_LOCK_GRANT			BIT(1)
+#define PCA9641_CTL_BUS_CONNECT	 		BIT(2)
+#define PCA9641_CTL_BUS_INIT			BIT(3)
+#define PCA9641_CTL_SMBUS_SWRST	 		BIT(4)
+#define PCA9641_CTL_IDLE_TIMER_DIS		BIT(5)
+#define PCA9641_CTL_SMBUS_DIS	 		BIT(6)
+#define PCA9641_CTL_PRIORITY			BIT(7)
+
+#define PCA9641_STS_OTHER_LOCK	 		BIT(0)
+#define PCA9641_STS_BUS_INIT_FAIL		BIT(1)
+#define PCA9641_STS_BUS_HUNG	 		BIT(2)
+#define PCA9641_STS_MBOX_EMPTY	 		BIT(3)
+#define PCA9641_STS_MBOX_FULL			BIT(4)
+#define PCA9641_STS_TEST_INT	 		BIT(5)
+#define PCA9641_STS_SCL_IO		 		BIT(6)
+#define PCA9641_STS_SDA_IO		 		BIT(7)
+
+#define PCA9641_INT_STS_IN              BIT(0)
+#define PCA9641_MSK_INT_IN              BIT(0)
+
+#define PCA9641_RES_TIME		0x03
+
 #define BUSON		(PCA9541_CTL_BUSON | PCA9541_CTL_NBUSON)
 #define MYBUS		(PCA9541_CTL_MYBUS | PCA9541_CTL_NMYBUS)
 #define mybus(x)	(!((x) & MYBUS) || ((x) & MYBUS) == MYBUS)
 #define busoff(x)	(!((x) & BUSON) || ((x) & BUSON) == BUSON)
 
+#define BUSOFF(x, y)	(!((x) & PCA9641_CTL_LOCK_GRANT) && \
+						!((y) & PCA9641_STS_OTHER_LOCK))
+#define other_lock(x)	((x) & PCA9641_STS_OTHER_LOCK)
+#define lock_grant(x)	((x) & PCA9641_CTL_LOCK_GRANT)
+
 /* arbitration timeouts, in jiffies */
 #define ARB_TIMEOUT	(HZ / 8)	/* 125 ms until forcing bus ownership */
 #define ARB2_TIMEOUT	(HZ / 4)	/* 250 ms until acquisition failure */
+#define ARB_TIMEOUT	(HZ / 2)		/* 500 ms until forcing bus ownership */
+#define ARB2_TIMEOUT	(HZ)			/* 1000 ms until acquisition failure */
 
 /* arbitration retry delays, in us */
 #define SELECT_DELAY_SHORT	50
@@ -79,6 +121,7 @@ struct pca9541 {
 
 static const struct i2c_device_id pca9541_id[] = {
 	{"pca9541", 0},
+	{"pca9641", 1},
 	{}
 };
 
@@ -87,6 +130,7 @@ MODULE_DEVICE_TABLE(i2c, pca9541_id);
 #ifdef CONFIG_OF
 static const struct of_device_id pca9541_of_match[] = {
 	{ .compatible = "nxp,pca9541" },
+	{ .compatible = "nxp,pca9641" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, pca9541_of_match);
@@ -281,6 +325,366 @@ static int pca9541_release_chan(struct i2c_mux_core *muxc, u32 chan)
 }
 
 /*
+ * Arbitration management functions
+ */
+static void pca9641_release_bus(struct i2c_client *client)
+{
+       pca9541_reg_write(client, PCA9641_CONTROL, 0);
+}
+
+/*
+ * Channel arbitration
+ *
+ * Return values:
+ *  <0: error
+ *  0 : bus not acquired
+ *  1 : bus acquired
+ */
+static int pca9641_arbitrate(struct i2c_client *client)
+{
+       struct i2c_mux_core *muxc = i2c_get_clientdata(client);
+       struct pca9541 *data = i2c_mux_priv(muxc);
+       int reg_ctl, reg_sts;
+
+       reg_ctl = pca9541_reg_read(client, PCA9641_CONTROL);
+       if (reg_ctl < 0) {
+               printk("[Eli test] error %d\n",reg_ctl);
+               return reg_ctl;
+       }
+       reg_sts = pca9541_reg_read(client, PCA9641_STATUS);
+
+       if (BUSOFF(reg_ctl, reg_sts)) {
+               /*
+                * Bus is off. Request ownership or turn it on unless
+                * other master requested ownership.
+                */
+               reg_ctl |= PCA9641_CTL_LOCK_REQ;
+               pca9541_reg_write(client, PCA9641_CONTROL, reg_ctl);
+               reg_ctl = pca9541_reg_read(client, PCA9641_CONTROL);
+
+               if (lock_grant(reg_ctl)) {
+                       /*
+                        * Other master did not request ownership,
+                        * or arbitration timeout expired. Take the bus.
+                        */
+                       reg_ctl |= PCA9641_CTL_BUS_CONNECT
+                               | PCA9641_CTL_LOCK_REQ;
+                       pca9541_reg_write(client, PCA9641_CONTROL, reg_ctl);
+                       data->select_timeout = SELECT_DELAY_SHORT;
+
+                       return 1;
+               } else {
+                       /*
+                        * Other master requested ownership.
+                        * Set extra long timeout to give it time to acquire it.
+                        */
+                       data->select_timeout = SELECT_DELAY_LONG * 2;
+               }
+       } else if (lock_grant(reg_ctl)) {
+               /*
+                * Bus is on, and we own it. We are done with acquisition.
+                */
+               reg_ctl |= PCA9641_CTL_BUS_CONNECT | PCA9641_CTL_LOCK_REQ;
+               pca9541_reg_write(client, PCA9641_CONTROL, reg_ctl);
+
+               return 1;
+       } else if (other_lock(reg_sts)) {
+               /*
+                * Other master owns the bus.
+                * If arbitration timeout has expired, force ownership.
+                * Otherwise request it.
+                */
+               data->select_timeout = SELECT_DELAY_LONG;
+               reg_ctl |= PCA9641_CTL_LOCK_REQ;
+               pca9541_reg_write(client, PCA9641_CONTROL, reg_ctl);
+       }
+       return 0;
+}
+
+static int pca9641_select_chan(struct i2c_mux_core *muxc, u32 chan)
+{
+       struct pca9541 *data = i2c_mux_priv(muxc);
+       struct i2c_client *client = data->client;
+       int ret;
+       unsigned long timeout = jiffies + ARB2_TIMEOUT;
+       /* give up after this time */
+       data->arb_timeout = jiffies + ARB_TIMEOUT;
+       /* force bus ownership after this time */
+
+       do {
+               ret = pca9641_arbitrate(client);
+               if (ret) {
+                       return ret < 0 ? ret : 0;
+               }
+
+               if (data->select_timeout == SELECT_DELAY_SHORT) {
+                       udelay(data->select_timeout);
+               }
+               else {
+                       msleep(data->select_timeout / 1000);
+               }
+
+       } while (time_is_after_eq_jiffies(timeout));
+       dev_dbg(&client->dev, "Timeout: %s\n", client->name);
+
+       return -ETIMEDOUT;
+}
+
+static int pca9641_release_chan(struct i2c_mux_core *muxc, u32 chan)
+{
+       struct pca9541 *data = i2c_mux_priv(muxc);
+       struct i2c_client *client = data->client;
+
+       pca9641_release_bus(client);
+       return 0;
+}
+
+static int pca9641_detect_id(struct i2c_client *client)
+{
+       int reg;
+
+       reg = pca9541_reg_read(client, PCA9641_ID);
+       if (reg == PCA9641_ID_MAGIC) {
+               return 1;
+       }
+       else {
+               return 0;
+       }
+}
+
+static ssize_t mbox_empty_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_STATUS);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of status\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_STS_MBOX_EMPTY);
+	}
+	return ret;
+}
+DEVICE_ATTR_RO(mbox_empty);
+
+static ssize_t mbox_full_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_STATUS);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of status\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_STS_MBOX_FULL);
+	}
+	return ret;
+}
+DEVICE_ATTR_RO(mbox_full);
+
+static ssize_t reg_dump_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int i, reg, n = 0;
+
+	for (i = 0; i < PCA9641_REG_DUMP_NUM; i++) {
+		reg = pca9541_reg_read(client, i);
+		if (reg < 0) {
+			pr_err("cannot read pca9641 reg: %.2x\n", i);
+			n += scnprintf(buf + ret, PAGE_SIZE, "0x%.2x:err\n", i);
+		} else {
+			n += scnprintf(buf + ret, PAGE_SIZE, "0x%.2x:%d\n", i, reg);
+		}		
+	}
+	return n;
+}
+DEVICE_ATTR_RO(reg_dump);
+
+static int pca9641_mst_id;
+module_param(pca9641_mst_id, int, 0644);
+static ssize_t master_id_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int ret = 0;
+
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", pca9641_mst_id);
+	return ret;
+}
+DEVICE_ATTR_RO(master_id);
+
+static ssize_t unlock_bus_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_CONTROL);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of control\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", !lock_grant(reg));
+	}
+	return ret;
+}
+
+static ssize_t unlock_bus_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int unlock_bus = 0;
+
+	if (!kstrtoint(buff, 0, &unlock_bus) && unlock_bus) 
+		pca9641_release_bus(client);
+	return size;
+}
+DEVICE_ATTR_RW(unlock_bus);
+
+static ssize_t idle_release_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_CONTROL);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of control\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_CTL_IDLE_TIMER_DIS);
+	}
+	return ret;
+}
+
+static ssize_t idle_release_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int release = 0;
+
+	if (!kstrtoint(buff, 0, &release) && release) 
+		pca9541_reg_write(client, PCA9641_CONTROL, PCA9641_CTL_IDLE_TIMER_DIS);
+	return size;
+}
+DEVICE_ATTR_RW(idle_release);
+
+static ssize_t mbox_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int ret = -1;	
+
+	struct i2c_adapter *adap = client->adapter;
+	union i2c_smbus_data data;
+
+	ret = __i2c_smbus_xfer(adap, client->addr, client->flags,
+			       I2C_SMBUS_READ, PCA9641_MBOX_LO | 0x80,
+			       I2C_SMBUS_WORD_DATA, &data);
+
+	if (ret < 0) {
+		pr_err("cannot read pca9641 reg of PCA9641_MBOX_LO\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", ret);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", data.word);
+	}
+	return ret;
+}
+
+static ssize_t mbox_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	u16 mbox = 0;
+	struct i2c_adapter *adap = client->adapter;
+	union i2c_smbus_data data;
+
+	if (!kstrtou16(buff, 0, &mbox)) {
+		data.word = mbox;
+		__i2c_smbus_xfer(adap, client->addr, client->flags,
+						I2C_SMBUS_WRITE, PCA9641_MBOX_LO | 0x80,
+						I2C_SMBUS_WORD_DATA, &data);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(mbox);
+
+static ssize_t int_in_mask_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of control\n");
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_MSK_INT_IN);
+	}
+	return ret;
+}
+
+static ssize_t int_in_mask_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int enable = 0;
+
+	if (!kstrtoint(buff, 0, &enable) && enable) 
+		pca9541_reg_write(client, PCA9641_INT_MASK, PCA9641_MSK_INT_IN);
+	return size;
+}
+DEVICE_ATTR_RW(int_in_mask);
+
+
+
+static struct attribute *pca9641_sysfs_entries[] = {
+	&dev_attr_mbox_empty.attr,
+	&dev_attr_mbox_full.attr,
+	&dev_attr_reg_dump.attr,
+	&dev_attr_master_id.attr,
+	&dev_attr_unlock_bus.attr,
+	&dev_attr_idle_release.attr,	
+	&dev_attr_mbox.attr,
+	&dev_attr_int_in_mask.attr,
+	NULL,
+};
+
+static struct attribute_group pca9641_sysfs_group = {
+	.name = "pca9641",
+	.attrs = pca9641_sysfs_entries,
+};
+
+/*
  * I2C init/probing/exit functions
  */
 static int pca9541_probe(struct i2c_client *client,
@@ -290,23 +694,42 @@ static int pca9541_probe(struct i2c_client *client,
 	struct i2c_mux_core *muxc;
 	struct pca9541 *data;
 	int ret;
+	int detect_id;
 
 	if (!i2c_check_functionality(adap, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
 
+	detect_id = pca9641_detect_id(client);
 	/*
 	 * I2C accesses are unprotected here.
 	 * We have to lock the I2C segment before releasing the bus.
 	 */
-	i2c_lock_bus(adap, I2C_LOCK_SEGMENT);
-	pca9541_release_bus(client);
-	i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
+	if (detect_id == 0) {
+	        i2c_lock_bus(adap, I2C_LOCK_SEGMENT);
+	        pca9541_release_bus(client);
+	        i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
+	} else {
+	        i2c_lock_bus(adap, I2C_LOCK_SEGMENT);
+	        pca9641_release_bus(client);
+	        i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
+			ret = sysfs_create_group(&client->dev->kobj, &pca9641_sysfs_group);
+			if (ret) {
+				dev_err(&client->dev, "could not create devices\n");
+				return ret;
+			}
+	}
 
 	/* Create mux adapter */
 
-	muxc = i2c_mux_alloc(adap, &client->dev, 1, sizeof(*data),
-			     I2C_MUX_ARBITRATOR,
-			     pca9541_select_chan, pca9541_release_chan);
+	if (detect_id == 0) {
+	        muxc = i2c_mux_alloc(adap, &client->dev, 1, sizeof(*data),
+	                             I2C_MUX_ARBITRATOR,
+	                             pca9541_select_chan, pca9541_release_chan);
+	} else {
+	        muxc = i2c_mux_alloc(adap, &client->dev, 1, sizeof(*data),
+	                             I2C_MUX_ARBITRATOR,
+	                             pca9641_select_chan, pca9641_release_chan);
+	}
 	if (!muxc)
 		return -ENOMEM;
 
@@ -346,5 +769,5 @@ static struct i2c_driver pca9541_driver = {
 module_i2c_driver(pca9541_driver);
 
 MODULE_AUTHOR("Guenter Roeck <linux@roeck-us.net>");
-MODULE_DESCRIPTION("PCA9541 I2C master selector driver");
+MODULE_DESCRIPTION("PCA9541/PCA9641 I2C master selector driver");
 MODULE_LICENSE("GPL v2");
