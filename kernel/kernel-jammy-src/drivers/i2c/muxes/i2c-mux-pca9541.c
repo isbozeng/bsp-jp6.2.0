@@ -464,9 +464,9 @@ static ssize_t mbox_empty_show(struct device *dev,
 
 	if (reg < 0) {
 		pr_err("cannot read pca9641 reg of status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%ld\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_STS_MBOX_EMPTY);
+		ret = scnprintf(buf, PAGE_SIZE, "%ld\n", (reg & PCA9641_STS_MBOX_EMPTY)?1:0);
 	}
 	return ret;
 }
@@ -484,9 +484,9 @@ static ssize_t mbox_full_show(struct device *dev,
 
 	if (reg < 0) {
 		pr_err("cannot read pca9641 reg of status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%ld\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_STS_MBOX_FULL);
+		ret = scnprintf(buf, PAGE_SIZE, "%ld\n", (reg & PCA9641_STS_MBOX_FULL)?1:0);
 	}
 	return ret;
 }
@@ -504,9 +504,9 @@ static ssize_t reg_dump_show(struct device *dev,
 		reg = pca9541_reg_read(client, i);
 		if (reg < 0) {
 			pr_err("cannot read pca9641 reg: %.2x\n", i);
-			n += scnprintf(buf + ret, PAGE_SIZE, "0x%.2x:err\n", i);
+			n += scnprintf(buf + n, PAGE_SIZE, "0x%.2x:err\n", i);
 		} else {
-			n += scnprintf(buf + ret, PAGE_SIZE, "0x%.2x:%d\n", i, reg);
+			n += scnprintf(buf + n, PAGE_SIZE, "0x%.2x:%.2x\n", i, reg);
 		}		
 	}
 	return n;
@@ -526,6 +526,26 @@ static ssize_t master_id_show(struct device *dev,
 }
 DEVICE_ATTR_RO(master_id);
 
+static ssize_t other_lock_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_STATUS);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of status\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", other_lock(reg));
+	}
+	return ret;
+}
+DEVICE_ATTR_RO(other_lock);
+
 static ssize_t unlock_bus_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
@@ -538,9 +558,9 @@ static ssize_t unlock_bus_show(struct device *dev,
 
 	if (reg < 0) {
 		pr_err("cannot read pca9641 reg of control\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", !lock_grant(reg));
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (lock_grant(reg))?0:1);
 	}
 	return ret;
 }
@@ -570,9 +590,9 @@ static ssize_t idle_release_show(struct device *dev,
 
 	if (reg < 0) {
 		pr_err("cannot read pca9641 reg of control\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_CTL_IDLE_TIMER_DIS);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_CTL_IDLE_TIMER_DIS)?1:0);
 	}
 	return ret;
 }
@@ -599,7 +619,7 @@ static ssize_t mbox_show(struct device *dev,
 	int ret = -1;	
 
 	struct i2c_adapter *adap = client->adapter;
-	union i2c_smbus_data data;
+	union i2c_smbus_data data = { .word = 0 };
 
 	ret = __i2c_smbus_xfer(adap, client->addr, client->flags,
 			       I2C_SMBUS_READ, PCA9641_MBOX_LO | 0x80,
@@ -607,9 +627,9 @@ static ssize_t mbox_show(struct device *dev,
 
 	if (ret < 0) {
 		pr_err("cannot read pca9641 reg of PCA9641_MBOX_LO\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", ret);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", ret);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", data.word);
+		ret = scnprintf(buf, PAGE_SIZE, "0x%.4x\n", data.word);
 	}
 	return ret;
 }
@@ -621,7 +641,7 @@ static ssize_t mbox_store(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	u16 mbox = 0;
 	struct i2c_adapter *adap = client->adapter;
-	union i2c_smbus_data data;
+	union i2c_smbus_data data = {.word = 0};
 
 	if (!kstrtou16(buff, 0, &mbox)) {
 		data.word = mbox;
@@ -645,7 +665,7 @@ static ssize_t int_in_mask_show(struct device *dev,
 
 	if (reg < 0) {
 		pr_err("cannot read pca9641 reg of control\n");
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
 		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_MSK_INT_IN);
 	}
@@ -659,8 +679,8 @@ static ssize_t int_in_mask_store(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	int enable = 0;
 
-	if (!kstrtoint(buff, 0, &enable) && enable) 
-		pca9541_reg_write(client, PCA9641_INT_MASK, PCA9641_MSK_INT_IN);
+	if (!kstrtoint(buff, 0, &enable)) 
+		pca9541_reg_write(client, PCA9641_INT_MASK, enable);
 	return size;
 }
 DEVICE_ATTR_RW(int_in_mask);
@@ -670,6 +690,7 @@ DEVICE_ATTR_RW(int_in_mask);
 static struct attribute *pca9641_sysfs_entries[] = {
 	&dev_attr_mbox_empty.attr,
 	&dev_attr_mbox_full.attr,
+	&dev_attr_other_lock.attr,
 	&dev_attr_reg_dump.attr,
 	&dev_attr_master_id.attr,
 	&dev_attr_unlock_bus.attr,
@@ -680,7 +701,6 @@ static struct attribute *pca9641_sysfs_entries[] = {
 };
 
 static struct attribute_group pca9641_sysfs_group = {
-	.name = "pca9641",
 	.attrs = pca9641_sysfs_entries,
 };
 
@@ -712,7 +732,9 @@ static int pca9541_probe(struct i2c_client *client,
 	        i2c_lock_bus(adap, I2C_LOCK_SEGMENT);
 	        pca9641_release_bus(client);
 	        i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
-			ret = sysfs_create_group(&client->dev->kobj, &pca9641_sysfs_group);
+			dev_set_name(&client->dev, "pca9561-%d-%.2x", client->adapter->nr, client->addr);
+			pca9641_sysfs_group.name = client->dev.kobj.name;
+			ret = sysfs_create_group(&client->dev.kobj, &pca9641_sysfs_group);
 			if (ret) {
 				dev_err(&client->dev, "could not create devices\n");
 				return ret;
