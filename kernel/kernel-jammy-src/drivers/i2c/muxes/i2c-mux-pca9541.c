@@ -116,7 +116,7 @@
 #define other_lock(x)	((x) & PCA9641_STS_OTHER_LOCK)
 #define lock_grant(x)	((x) & PCA9641_CTL_LOCK_GRANT)
 
-#define BYTE_TO_BINARY_PATTERN "%.2x:%c%c%c%c%c%c%c%c\n"
+#define BYTE_TO_BINARY_PATTERN "0x%.2x:0b%c%c%c%c%c%c%c%c\n"
 #define BYTE_TO_BINARY(byte)  \
   ((byte) & 0x80 ? '1' : '0'), \
   ((byte) & 0x40 ? '1' : '0'), \
@@ -681,7 +681,7 @@ static ssize_t mbox_msg_store(struct device *dev,
 }
 DEVICE_ATTR_RW(mbox_msg);
 
-static ssize_t int_in_enable_show(struct device *dev,
+static ssize_t enable_int_io_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -700,7 +700,7 @@ static ssize_t int_in_enable_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t int_in_enable_store(struct device *dev,
+static ssize_t enable_int_io_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
@@ -714,9 +714,9 @@ static ssize_t int_in_enable_store(struct device *dev,
 	}
 	return size;
 }
-DEVICE_ATTR_RW(int_in_enable);
+DEVICE_ATTR_RW(enable_int_io);
 
-static ssize_t int_in_clear_show(struct device *dev,
+static ssize_t clear_int_io_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -736,7 +736,7 @@ static ssize_t int_in_clear_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t int_in_clear_store(struct device *dev,
+static ssize_t clear_int_io_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
@@ -749,9 +749,9 @@ static ssize_t int_in_clear_store(struct device *dev,
 	}
 	return size;
 }
-DEVICE_ATTR_RW(int_in_clear);
+DEVICE_ATTR_RW(clear_int_io);
 
-static ssize_t int_mbox_full_enable_show(struct device *dev,
+static ssize_t enable_int_new_msg_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -770,7 +770,7 @@ static ssize_t int_mbox_full_enable_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t int_mbox_full_enable_store(struct device *dev,
+static ssize_t enable_int_new_msg_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
@@ -784,9 +784,9 @@ static ssize_t int_mbox_full_enable_store(struct device *dev,
 	}
 	return size;
 }
-DEVICE_ATTR_RW(int_mbox_full_enable);
+DEVICE_ATTR_RW(enable_int_new_msg);
 
-static ssize_t int_mbox_full_clear_show(struct device *dev,
+static ssize_t clear_int_new_msg_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -800,13 +800,13 @@ static ssize_t int_mbox_full_clear_show(struct device *dev,
 		pr_err("cannot read pca9641 reg of int status\n");
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_INT_MBOX_FULL_STS);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_FULL_STS)?0:1);
 		
 	}
 	return ret;
 }
 
-static ssize_t int_mbox_full_clear_store(struct device *dev,
+static ssize_t clear_int_new_msg_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
@@ -819,11 +819,150 @@ static ssize_t int_mbox_full_clear_store(struct device *dev,
 	}
 	return size;
 }
-DEVICE_ATTR_RW(int_mbox_full_clear);
+DEVICE_ATTR_RW(clear_int_new_msg);
 
+static ssize_t enable_int_receipt_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
 
+	int reg, ret = 0;
 
-static ssize_t int_enable_show(struct device *dev,
+	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of int mask\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_EMPTY_MSK) ? 0 : 1);
+	}
+	return ret;
+}
+
+static ssize_t enable_int_receipt_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int reg, enable = 0, val;
+
+	if (!kstrtoint(buff, 0, &enable)) {
+		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
+		enable ? (reg &= ~PCA9641_INT_MBOX_EMPTY_MSK) : (reg |= PCA9641_INT_MBOX_EMPTY_MSK); 
+		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(enable_int_receipt);
+
+static ssize_t clear_int_receipt_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of int status\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_EMPTY_STS)?0:1);
+		
+	}
+	return ret;
+}
+
+static ssize_t clear_int_receipt_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int reg, clear = 0;
+
+	if (!kstrtoint(buff, 0, &clear) && clear) {
+		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
+		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_MBOX_EMPTY_STS);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(clear_int_receipt);
+
+static ssize_t enable_int_getbus_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of int mask\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_LOCK_GRANT_MASK) ? 0 : 1);
+	}
+	return ret;
+}
+
+static ssize_t enable_int_getbus_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int reg, enable = 0, val;
+
+	if (!kstrtoint(buff, 0, &enable)) {
+		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
+		enable ? (reg &= ~PCA9641_INT_LOCK_GRANT_MASK) : (reg |= PCA9641_INT_LOCK_GRANT_MASK); 
+		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(enable_int_getbus);
+
+static ssize_t clear_int_getbus_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of int status\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_LOCK_GRANT_STS)?0:1);
+		
+	}
+	return ret;
+}
+
+static ssize_t clear_int_getbus_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int reg, clear = 0;
+
+	if (!kstrtoint(buff, 0, &clear) && clear) {
+		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
+		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_LOCK_GRANT_STS);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(clear_int_getbus);
+
+//debug
+static ssize_t int_mask_state_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -842,7 +981,7 @@ static ssize_t int_enable_show(struct device *dev,
 	return ret;
 }
 
-static ssize_t int_enable_store(struct device *dev,
+static ssize_t int_mask_state_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
@@ -855,7 +994,7 @@ static ssize_t int_enable_store(struct device *dev,
 	}
 	return size;
 }
-DEVICE_ATTR_RW(int_enable);
+DEVICE_ATTR_RW(int_mask_state);
 
 static ssize_t int_state_show(struct device *dev,
 				struct device_attribute *attr,
@@ -964,12 +1103,16 @@ static int pca9541_probe(struct i2c_client *client,
 				&dev_attr_bus_release.attr,
 				&dev_attr_force_release.attr,	
 				&dev_attr_mbox_msg.attr,
-				&dev_attr_int_in_enable.attr,
-				&dev_attr_int_in_clear.attr,
-				&dev_attr_int_mbox_full_clear.attr,
-				&dev_attr_int_mbox_full_enable.attr,
+				&dev_attr_enable_int_io.attr,
+				&dev_attr_clear_int_io.attr,
+				&dev_attr_enable_int_getbus.attr,
+				&dev_attr_clear_int_getbus.attr,				
+				&dev_attr_enable_int_new_msg.attr,
+				&dev_attr_clear_int_new_msg.attr,			
+				&dev_attr_enable_int_receipt.attr,	
+				&dev_attr_clear_int_receipt.attr,
 				&dev_attr_int_state.attr,
-				&dev_attr_int_enable.attr,
+				&dev_attr_int_mask_state.attr,
 				&dev_attr_ctrl_cmd.attr,
 				NULL
 			};
