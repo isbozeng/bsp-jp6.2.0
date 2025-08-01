@@ -25,6 +25,9 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/kernel.h>
+#include <linux/string.h>
+
 /*
  * The PCA9541/PCA9641 is a bus master selector. It supports two I2C masters
  * connected to a single slave bus.
@@ -115,6 +118,8 @@
 						!((y) & PCA9641_STS_OTHER_LOCK))
 #define other_lock(x)	((x) & PCA9641_STS_OTHER_LOCK)
 #define lock_grant(x)	((x) & PCA9641_CTL_LOCK_GRANT)
+#define tst_bit(n, val) ((((val) >> (n)) & 0x01)^1)
+#define toggle_bit(n, val) ((val) ^= (1UL << (n)))
 
 #define BYTE_TO_BINARY_PATTERN "0x%.2x:0b%c%c%c%c%c%c%c%c\n"
 #define BYTE_TO_BINARY(byte)  \
@@ -350,6 +355,44 @@ static int pca9541_release_chan(struct i2c_mux_core *muxc, u32 chan)
 	return 0;
 }
 
+static int parse_mask_val(const char *buf, u32 *mask, u32 *val)
+{
+        char *input, *p, *token;
+        int ret = 0;
+
+        if (!buf || !mask || !val)
+                return -EINVAL;
+
+        input = kstrdup(buf, GFP_KERNEL);  // 内核空间需要自己复制字符串
+        if (!input)
+                return -ENOMEM;
+
+        p = input;
+
+        // 解析 mask
+        token = strsep(&p, "/");
+        if (!token) {
+                ret = -EINVAL;
+                goto out;
+        }
+        ret = kstrtou32(token, 0, mask);  // base=0: 自动识别0x、0前缀
+        if (ret)
+                goto out;
+
+        // 解析 val
+        token = strsep(&p, "/");
+        if (!token) {
+                ret = -EINVAL;
+                goto out;
+        }
+        ret = kstrtou32(token, 0, val);
+        if (ret)
+                goto out;
+
+out:
+        kfree(input);
+        return ret;
+}
 /*
  * Arbitration management functions
  */
@@ -478,7 +521,30 @@ static int pca9641_detect_id(struct i2c_client *client)
        }
 }
 
-static ssize_t mbox_new_receipt_show(struct device *dev,
+static ssize_t int_desc_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int ret = 0;
+	ret = scnprintf(buf, PAGE_SIZE, "using interrupts guide\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "cat [int_enable/int_state]:display enable/state of interrupts and clear all of interrupts\n");	
+	ret += scnprintf(buf + ret, PAGE_SIZE, "echo mask/val > [int_enable/int_state]:mask = 0xF0, val = 0xA0->updates only the upper 4 bits to A\n");				
+	ret += scnprintf(buf + ret, PAGE_SIZE, "interrupt bitmap description\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit7:reserved\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit6:bus hung, 0 disable\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit5:mbox is full, 0 disable\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit4:other mbox is empty, 0 disable\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit3:sent an interrupt to itself, 0 disable\n");
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit2:current master get bus, 0 disable\n");		
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit1:this master has involuntarily lost bus, 0 disable\n");		
+	ret += scnprintf(buf + ret, PAGE_SIZE, "bit0:io input from downstream, 0 disable\n");	
+		
+	return ret;
+}
+DEVICE_ATTR_RO(int_desc);
+static ssize_t other_mbox_empty_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -496,9 +562,9 @@ static ssize_t mbox_new_receipt_show(struct device *dev,
 	}
 	return ret;
 }
-DEVICE_ATTR_RO(mbox_new_receipt);
+DEVICE_ATTR_RO(other_mbox_empty);
 
-static ssize_t mbox_new_msg_show(struct device *dev,
+static ssize_t mbox_full_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -516,7 +582,7 @@ static ssize_t mbox_new_msg_show(struct device *dev,
 	}
 	return ret;
 }
-DEVICE_ATTR_RO(mbox_new_msg);
+DEVICE_ATTR_RO(mbox_full);
 
 static ssize_t reg_dump_show(struct device *dev,
 				struct device_attribute *attr,
@@ -538,8 +604,6 @@ static ssize_t reg_dump_show(struct device *dev,
 	return n;
 }
 DEVICE_ATTR_RO(reg_dump);
-
-
 
 static ssize_t other_lock_show(struct device *dev,
 				struct device_attribute *attr,
@@ -593,7 +657,7 @@ static ssize_t bus_release_store(struct device *dev,
 }
 DEVICE_ATTR_RW(bus_release);
 
-static ssize_t force_release_show(struct device *dev,
+static ssize_t bus_idle_release_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -608,23 +672,104 @@ static ssize_t force_release_show(struct device *dev,
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
 		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_CTL_IDLE_TIMER_DIS)?1:0);
-		pca9541_reg_write(client, PCA9641_CONTROL, 0);
 	}
 	return ret;
 }
 
-static ssize_t force_release_store(struct device *dev,
+static ssize_t bus_idle_release_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	int release = 0;
-
-	if (!kstrtoint(buff, 0, &release) && release) 
-		pca9541_reg_write(client, PCA9641_CONTROL, PCA9641_CTL_IDLE_TIMER_DIS);
+	int reg = pca9541_reg_read(client, PCA9641_CONTROL);
+	if (!kstrtoint(buff, 0, &release)) {
+		if (release) 
+			pca9541_reg_write(client, PCA9641_CONTROL, reg | PCA9641_CTL_IDLE_TIMER_DIS);
+		else
+			pca9541_reg_write(client, PCA9641_CONTROL, reg & (~PCA9641_CTL_IDLE_TIMER_DIS));
+		
+	}
+		
 	return size;
 }
-DEVICE_ATTR_RW(force_release);
+DEVICE_ATTR_RW(bus_idle_release);
+
+// static ssize_t soft_reset_show(struct device *dev,
+// 				struct device_attribute *attr,
+// 				char *buf)
+// {
+// 	struct i2c_client *client = to_i2c_client(dev);
+
+// 	int reg, ret = 0;
+
+// 	reg = pca9541_reg_read(client, PCA9641_CONTROL);
+
+// 	if (reg < 0) {
+// 		pr_err("cannot read pca9641 reg of control\n");
+// 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+// 	} else {
+// 		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_CTL_SMBUS_SWRST)?1:0);
+// 	}
+// 	return ret;
+// }
+
+static ssize_t soft_reset_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	u8 reset_cmd = 0x06;
+	int reset = 0;
+	int ret;
+	if (!kstrtoint(buff, 0, &reset) && reset) {
+		
+		struct i2c_msg msg = {
+			.addr  = 0x00,       // General Call address
+			.flags = 0,          // Write
+			.len   = 1,
+			.buf   = &reset_cmd,
+		};
+		ret = i2c_transfer(client->adapter, &msg, 1);
+		if (ret < 0)
+			pr_err("pca 9641 I2C Software Reset failed: %d\n", ret);
+	}
+		
+	return size;
+}
+DEVICE_ATTR_WO(soft_reset);
+
+static ssize_t bus_lock_ms_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	int reg, ret = 0;
+
+	reg = pca9541_reg_read(client, PCA9641_TIME);
+
+	if (reg < 0) {
+		pr_err("cannot read pca9641 reg of reserve time\n");
+		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+	} else {
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg);
+	}
+	return ret;
+}
+
+static ssize_t bus_lock_ms_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buff, size_t size)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	int ms = 0;
+	if (!kstrtoint(buff, 0, &ms)) {
+		pca9541_reg_write(client, PCA9641_TIME, ms);
+	}
+	return size;
+}
+DEVICE_ATTR_RW(bus_lock_ms);
 
 static ssize_t mbox_msg_show(struct device *dev,
 				struct device_attribute *attr,
@@ -681,7 +826,7 @@ static ssize_t mbox_msg_store(struct device *dev,
 }
 DEVICE_ATTR_RW(mbox_msg);
 
-static ssize_t enable_int_io_show(struct device *dev,
+static ssize_t int_enable_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
@@ -692,309 +837,50 @@ static ssize_t enable_int_io_show(struct device *dev,
 	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
 
 	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of control\n");
+		pr_err("cannot read pca9641 reg of int enable\n");
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_IN_MASK) ? 0 : 1);
+		u8 mask = ~reg;
+		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, mask, BYTE_TO_BINARY(mask));				
 	}
 	return ret;
 }
 
-static ssize_t enable_int_io_store(struct device *dev,
+static ssize_t int_enable_store(struct device *dev,
 				struct device_attribute *attr,
 				const char *buff, size_t size)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-	int reg, enable = 0, val;
+	int ret;
+	u32 mask, val;
+	char *kbuf;
 
-	if (!kstrtoint(buff, 0, &enable)) {
-		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-		enable ? (reg &= ~PCA9641_INT_IN_MASK) : (reg |= PCA9641_INT_IN_MASK); 
-		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
+	// 复制用户输入为以 \0 结尾的字符串
+	kbuf = kmemdup_nul(buff, size, GFP_KERNEL);
+	if (!kbuf) {
+		pr_err("no mem in pca9641 int enable\n");
+		return -ENOMEM;
 	}
+
+	strim(kbuf);  // 去除前后空白字符
+
+	ret = parse_mask_val(kbuf, &mask, &val);  // 你前面定义的函数
+	kfree(kbuf);
+	val = ~val;
+	if (ret) {
+		pr_err("Invalid mask/val format in pca9641 int enable\n");
+		return -EINVAL;
+	}
+	// pr_info("Got mask=0x%x, val=0x%x in pca9641 int enable\n", mask, val);
+	ret = pca9541_reg_read(client, PCA9641_INT_MASK);
+	if (ret < 0)
+		pr_err("cannot read pca9641 reg of int mask %d\n", ret);
+	else 
+		pca9541_reg_write(client, PCA9641_INT_MASK, (mask & val)|(ret & ~mask));
+
 	return size;
 }
-DEVICE_ATTR_RW(enable_int_io);
-
-static ssize_t clear_int_io_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", reg & PCA9641_INT_IN_STS);
-		
-	}
-	return ret;
-}
-
-static ssize_t clear_int_io_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, clear = 0;
-
-	if (!kstrtoint(buff, 0, &clear) && clear) {
-		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_IN_STS);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(clear_int_io);
-
-static ssize_t enable_int_new_msg_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of control\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_FULL_MSK) ? 0 : 1);
-	}
-	return ret;
-}
-
-static ssize_t enable_int_new_msg_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, enable = 0, val;
-
-	if (!kstrtoint(buff, 0, &enable)) {
-		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-		enable ? (reg &= ~PCA9641_INT_MBOX_FULL_MSK) : (reg |= PCA9641_INT_MBOX_FULL_MSK); 
-		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(enable_int_new_msg);
-
-static ssize_t clear_int_new_msg_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_FULL_STS)?0:1);
-		
-	}
-	return ret;
-}
-
-static ssize_t clear_int_new_msg_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, clear = 0;
-
-	if (!kstrtoint(buff, 0, &clear) && clear) {
-		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_MBOX_FULL_STS);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(clear_int_new_msg);
-
-static ssize_t enable_int_receipt_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int mask\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_EMPTY_MSK) ? 0 : 1);
-	}
-	return ret;
-}
-
-static ssize_t enable_int_receipt_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, enable = 0, val;
-
-	if (!kstrtoint(buff, 0, &enable)) {
-		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-		enable ? (reg &= ~PCA9641_INT_MBOX_EMPTY_MSK) : (reg |= PCA9641_INT_MBOX_EMPTY_MSK); 
-		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(enable_int_receipt);
-
-static ssize_t clear_int_receipt_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_MBOX_EMPTY_STS)?0:1);
-		
-	}
-	return ret;
-}
-
-static ssize_t clear_int_receipt_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, clear = 0;
-
-	if (!kstrtoint(buff, 0, &clear) && clear) {
-		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_MBOX_EMPTY_STS);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(clear_int_receipt);
-
-static ssize_t enable_int_getbus_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int mask\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_LOCK_GRANT_MASK) ? 0 : 1);
-	}
-	return ret;
-}
-
-static ssize_t enable_int_getbus_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, enable = 0, val;
-
-	if (!kstrtoint(buff, 0, &enable)) {
-		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-		enable ? (reg &= ~PCA9641_INT_LOCK_GRANT_MASK) : (reg |= PCA9641_INT_LOCK_GRANT_MASK); 
-		pca9541_reg_write(client, PCA9641_INT_MASK, reg);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(enable_int_getbus);
-
-static ssize_t clear_int_getbus_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int status\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (reg & PCA9641_INT_LOCK_GRANT_STS)?0:1);
-		
-	}
-	return ret;
-}
-
-static ssize_t clear_int_getbus_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, clear = 0;
-
-	if (!kstrtoint(buff, 0, &clear) && clear) {
-		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-		pca9541_reg_write(client, PCA9641_INT_STATUS, reg & PCA9641_INT_LOCK_GRANT_STS);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(clear_int_getbus);
-
-//debug
-static ssize_t int_mask_state_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-
-	int reg, ret = 0;
-
-	reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of control\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));
-	}
-	return ret;
-}
-
-static ssize_t int_mask_state_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, enable = 0, val;
-
-	if (!kstrtoint(buff, 0, &enable)) {
-		reg = pca9541_reg_read(client, PCA9641_INT_MASK);
-		pca9541_reg_write(client, PCA9641_INT_MASK, reg | enable);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(int_mask_state);
+DEVICE_ATTR_RW(int_enable);
 
 static ssize_t int_state_show(struct device *dev,
 				struct device_attribute *attr,
@@ -1010,8 +896,9 @@ static ssize_t int_state_show(struct device *dev,
 		pr_err("cannot read pca9641 reg of int status\n");
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));
-		
+
+		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));		
+		pca9541_reg_write(client, PCA9641_INT_STATUS, 0x7f);	
 	}
 	return ret;
 }
@@ -1021,12 +908,34 @@ static ssize_t int_state_store(struct device *dev,
 				const char *buff, size_t size)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-	int reg, clear = 0;
+	int reg, ret;
+	u32 mask, val;
+	char *kbuf;
 
-	if (!kstrtoint(buff, 0, &clear) && clear) {
-		reg = pca9541_reg_read(client, PCA9641_INT_STATUS);
-		pca9541_reg_write(client, PCA9641_INT_STATUS, reg | clear);
+	// 复制用户输入为以 \0 结尾的字符串
+	kbuf = kmemdup_nul(buff, size, GFP_KERNEL);
+	if (!kbuf) {
+		pr_err("no mem in pca9641 int state\n");
+		return -ENOMEM;
 	}
+
+	strim(kbuf);  // 去除前后空白字符
+
+	ret = parse_mask_val(kbuf, &mask, &val);  // 你前面定义的函数
+	val = ~val;
+	kfree(kbuf);
+	if (ret) {
+		pr_err("Invalid mask/val format in pca9641 int state\n");
+		return -EINVAL;
+	}
+	// pr_info("Got mask=0x%x, val=0x%x in pca9641 int state\n", mask, val);
+	ret = pca9541_reg_read(client, PCA9641_INT_STATUS);
+	if (ret < 0)
+		pr_err("cannot read pca9641 reg of int state %d\n", ret);
+	else 
+		pca9541_reg_write(client, PCA9641_INT_STATUS, (mask & val)|(ret & ~mask));
+
+
 	return size;
 }
 DEVICE_ATTR_RW(int_state);
@@ -1043,11 +952,10 @@ static ssize_t ctrl_cmd_show(struct device *dev,
 	reg = pca9541_reg_read(client, PCA9641_CONTROL);
 
 	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of int status\n");
+		pr_err("cannot read pca9641 reg of ctrl\n");
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
 		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));
-		
 	}
 	return ret;
 }
@@ -1059,9 +967,9 @@ static ssize_t ctrl_cmd_store(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	int reg, cmd = 0;
 
-	if (!kstrtoint(buff, 0, &cmd) && cmd) {
+	if (!kstrtoint(buff, 0, &cmd)) {
 		reg = pca9541_reg_read(client, PCA9641_CONTROL);
-		pca9541_reg_write(client, PCA9641_CONTROL, reg | cmd);
+		pca9541_reg_write(client, PCA9641_CONTROL, cmd);
 	}
 	return size;
 }
@@ -1096,23 +1004,23 @@ static int pca9541_probe(struct i2c_client *client,
 	        pca9641_release_bus(client);
 	        i2c_unlock_bus(adap, I2C_LOCK_SEGMENT);
 			struct attribute *all_attrs[] = {
-				&dev_attr_mbox_new_receipt.attr,
-				&dev_attr_mbox_new_msg.attr,
+				&dev_attr_other_mbox_empty.attr,
+				&dev_attr_mbox_full.attr,
 				&dev_attr_other_lock.attr,
 				&dev_attr_reg_dump.attr,
 				&dev_attr_bus_release.attr,
-				&dev_attr_force_release.attr,	
-				&dev_attr_mbox_msg.attr,
-				&dev_attr_enable_int_io.attr,
-				&dev_attr_clear_int_io.attr,
-				&dev_attr_enable_int_getbus.attr,
-				&dev_attr_clear_int_getbus.attr,				
-				&dev_attr_enable_int_new_msg.attr,
-				&dev_attr_clear_int_new_msg.attr,			
-				&dev_attr_enable_int_receipt.attr,	
-				&dev_attr_clear_int_receipt.attr,
+				&dev_attr_bus_idle_release.attr,	
+				&dev_attr_bus_lock_ms.attr,
+				&dev_attr_soft_reset.attr,
+				&dev_attr_mbox_msg.attr,	
+				&dev_attr_int_desc.attr,
+				// &dev_attr_clear_int_getbus.attr,				
+				// &dev_attr_enable_int_new_msg.attr,
+				// &dev_attr_clear_int_new_msg.attr,			
+				// &dev_attr_enable_int_receipt.attr,	
+				// &dev_attr_clear_int_receipt.attr,
 				&dev_attr_int_state.attr,
-				&dev_attr_int_mask_state.attr,
+				&dev_attr_int_enable.attr,
 				&dev_attr_ctrl_cmd.attr,
 				NULL
 			};
@@ -1130,7 +1038,7 @@ static int pca9541_probe(struct i2c_client *client,
 				attrs[i] = all_attrs[i];
 
 			attr_group->attrs = attrs;
-			dev_set_name(&client->dev, "pca9561-%d-%.2x", client->adapter->nr, client->addr);
+			dev_set_name(&client->dev, "pca9641-%d-%.2x", client->adapter->nr, client->addr);
 			attr_group->name = client->dev.kobj.name;
 			ret = sysfs_create_group(&client->dev.kobj, attr_group);
 			if (ret) {
@@ -1196,6 +1104,6 @@ static struct i2c_driver pca9541_driver = {
 
 module_i2c_driver(pca9541_driver);
 
-MODULE_AUTHOR("Guenter Roeck <linux@roeck-us.net>");
+MODULE_AUTHOR("bowen <zengbo@westwell-lab.com>");
 MODULE_DESCRIPTION("PCA9541/PCA9641 I2C master selector driver");
 MODULE_LICENSE("GPL v2");
