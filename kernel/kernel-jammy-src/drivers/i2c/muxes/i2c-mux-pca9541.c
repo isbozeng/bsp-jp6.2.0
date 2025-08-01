@@ -544,6 +544,7 @@ static ssize_t int_desc_show(struct device *dev,
 	return ret;
 }
 DEVICE_ATTR_RO(int_desc);
+
 static ssize_t other_mbox_empty_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
@@ -714,30 +715,30 @@ DEVICE_ATTR_RW(bus_idle_release);
 // 	return ret;
 // }
 
-static ssize_t soft_reset_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	u8 reset_cmd = 0x06;
-	int reset = 0;
-	int ret;
-	if (!kstrtoint(buff, 0, &reset) && reset) {
+// static ssize_t soft_reset_store(struct device *dev,
+// 				struct device_attribute *attr,
+// 				const char *buff, size_t size)
+// {
+// 	struct i2c_client *client = to_i2c_client(dev);
+// 	u8 reset_cmd = 0x06;
+// 	int reset = 0;
+// 	int ret;
+// 	if (!kstrtoint(buff, 0, &reset) && reset) {
 		
-		struct i2c_msg msg = {
-			.addr  = 0x00,       // General Call address
-			.flags = 0,          // Write
-			.len   = 1,
-			.buf   = &reset_cmd,
-		};
-		ret = i2c_transfer(client->adapter, &msg, 1);
-		if (ret < 0)
-			pr_err("pca 9641 I2C Software Reset failed: %d\n", ret);
-	}
+// 		struct i2c_msg msg = {
+// 			.addr  = 0x00,       // General Call address
+// 			.flags = 0,          // Write
+// 			.len   = 1,
+// 			.buf   = &reset_cmd,
+// 		};
+// 		ret = i2c_transfer(client->adapter, &msg, 1);
+// 		if (ret < 0)
+// 			pr_err("pca 9641 I2C Software Reset failed: %d\n", ret);
+// 	}
 		
-	return size;
-}
-DEVICE_ATTR_WO(soft_reset);
+// 	return size;
+// }
+// DEVICE_ATTR_WO(soft_reset);
 
 static ssize_t bus_lock_ms_show(struct device *dev,
 				struct device_attribute *attr,
@@ -941,39 +942,39 @@ static ssize_t int_state_store(struct device *dev,
 DEVICE_ATTR_RW(int_state);
 
 
-static ssize_t ctrl_cmd_show(struct device *dev,
-				struct device_attribute *attr,
-				char *buf)
-{
-	struct i2c_client *client = to_i2c_client(dev);
+// static ssize_t ctrl_cmd_show(struct device *dev,
+// 				struct device_attribute *attr,
+// 				char *buf)
+// {
+// 	struct i2c_client *client = to_i2c_client(dev);
 
-	int reg, ret = 0;
+// 	int reg, ret = 0;
 
-	reg = pca9541_reg_read(client, PCA9641_CONTROL);
+// 	reg = pca9541_reg_read(client, PCA9641_CONTROL);
 
-	if (reg < 0) {
-		pr_err("cannot read pca9641 reg of ctrl\n");
-		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
-	} else {
-		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));
-	}
-	return ret;
-}
+// 	if (reg < 0) {
+// 		pr_err("cannot read pca9641 reg of ctrl\n");
+// 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
+// 	} else {
+// 		ret = scnprintf(buf, PAGE_SIZE, BYTE_TO_BINARY_PATTERN, reg, BYTE_TO_BINARY(reg));
+// 	}
+// 	return ret;
+// }
 
-static ssize_t ctrl_cmd_store(struct device *dev,
-				struct device_attribute *attr,
-				const char *buff, size_t size)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	int reg, cmd = 0;
+// static ssize_t ctrl_cmd_store(struct device *dev,
+// 				struct device_attribute *attr,
+// 				const char *buff, size_t size)
+// {
+// 	struct i2c_client *client = to_i2c_client(dev);
+// 	int reg, cmd = 0;
 
-	if (!kstrtoint(buff, 0, &cmd)) {
-		reg = pca9541_reg_read(client, PCA9641_CONTROL);
-		pca9541_reg_write(client, PCA9641_CONTROL, cmd);
-	}
-	return size;
-}
-DEVICE_ATTR_RW(ctrl_cmd);
+// 	if (!kstrtoint(buff, 0, &cmd)) {
+// 		reg = pca9541_reg_read(client, PCA9641_CONTROL);
+// 		pca9541_reg_write(client, PCA9641_CONTROL, cmd);
+// 	}
+// 	return size;
+// }
+// DEVICE_ATTR_RW(ctrl_cmd);
 /*
  * I2C init/probing/exit functions
  */
@@ -1011,17 +1012,12 @@ static int pca9541_probe(struct i2c_client *client,
 				&dev_attr_bus_release.attr,
 				&dev_attr_bus_idle_release.attr,	
 				&dev_attr_bus_lock_ms.attr,
-				&dev_attr_soft_reset.attr,
+				// &dev_attr_soft_reset.attr,
 				&dev_attr_mbox_msg.attr,	
 				&dev_attr_int_desc.attr,
-				// &dev_attr_clear_int_getbus.attr,				
-				// &dev_attr_enable_int_new_msg.attr,
-				// &dev_attr_clear_int_new_msg.attr,			
-				// &dev_attr_enable_int_receipt.attr,	
-				// &dev_attr_clear_int_receipt.attr,
 				&dev_attr_int_state.attr,
 				&dev_attr_int_enable.attr,
-				&dev_attr_ctrl_cmd.attr,
+				// &dev_attr_ctrl_cmd.attr,
 				NULL
 			};
 			const int attr_count = ARRAY_SIZE(all_attrs);
