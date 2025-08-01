@@ -640,7 +640,7 @@ static ssize_t bus_release_show(struct device *dev,
 		pr_err("cannot read pca9641 reg of control\n");
 		ret = scnprintf(buf, PAGE_SIZE, "err:%d\n", reg);
 	} else {
-		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (lock_grant(reg))?1:0);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", (lock_grant(reg))?0:1);
 	}
 	return ret;
 }
