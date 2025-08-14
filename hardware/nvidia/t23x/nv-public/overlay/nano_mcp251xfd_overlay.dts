@@ -1,0 +1,218 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+
+
+
+/*
+ * Jetson Device-tree overlay for MCP251xFD CAN Controller.
+cpp -nostdinc -I  ../tegra/kernel-include/  -undef -x assembler-with-cpp nano_mcp251xfd_overlay.dts  nano_preprocessed.dts 
+dtc -@ -I dts -O dtb -o nano_mcp251xfd.dtbo  nano_preprocessed.dts
+ */
+
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/tegra234-p3767-0000-common.h>
+#include <dt-bindings/pinctrl/pinctrl-tegra.h>
+#include <dt-bindings/gpio/tegra-gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+#define TEGRA_MAIN_GPIO(port, offset) TEGRA234_MAIN_GPIO(port, offset)
+#define TEGRA_AON_GPIO(port, offset) TEGRA234_AON_GPIO(port, offset)
+
+
+
+
+/ {
+	overlay-name = "Westwell MCP2518FD";
+	jetson-header-name = "Jetson 40pin Header";	
+	compatible = JETSON_COMPATIBLE_P3768;
+
+	fragment@0 {
+
+		target-path = "/";
+		__overlay__ {		
+			clocks {
+				mcp2518fd_osc: mcp2518fd_osc {
+					compatible = "fixed-clock";
+					#clock-cells = <0x0>;
+					clock-frequency = <20000000>;
+					clock-accuracy = <10>;
+					clock-output-names = "mcp2518fd_osc";
+					status = "okay";
+				};
+			};		
+			bus@0 {
+			
+				spi@3210000 {
+					#address-cells = <1>;
+        			#size-cells = <0>;
+					status = "okay";
+					spi@0 {
+						status = "disabled";
+					};
+					spi@1 {
+						status = "disabled";
+					};
+					can0: can@0 {
+						compatible = "microchip,mcp2518fd";
+						status = "okay";
+						/*cs reg addr*/
+						reg = <0x0>;
+						clocks = <&mcp2518fd_osc>;					
+						interrupts-extended = <&tegra_main_gpio HDR40_PIN12_GPIO IRQ_TYPE_LEVEL_LOW>;
+						//microchip,rx-int-gpios = <&tegra_main_gpio HDR40_PIN32_GPIO GPIO_ACTIVE_LOW>;
+						spi-max-frequency = <20000000>;
+						pinctrl-names = "default";
+						pinctrl-0 = <&mcp251xfd_spi>;	
+						controller-data {
+							nvidia,enable-hw-based-cs;
+							nvidia,cs-setup-clk-count = <0x1e>;
+							nvidia,cs-hold-clk-count = <0x1e>;
+							nvidia,rx-clk-tap-delay = <0x1f>;
+							nvidia,tx-clk-tap-delay = <0x0>;
+						};
+					};				
+				};
+				spi@3230000 {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					status = "okay";
+					spi@0 {
+						status = "disabled";
+					};
+					spi@1 {
+						status = "disabled";
+					};
+					can1: can@0 {
+						compatible = "microchip,mcp2518fd";
+						status = "okay";
+						/*cs reg addr*/
+						reg = <0x0>;
+						clocks = <&mcp2518fd_osc>;
+						//pinctrl-names = "default";
+						//pinctrl-0 = <&mcp251xfd_spi>;	
+						interrupts-extended = <&tegra_main_gpio HDR40_PIN15_GPIO IRQ_TYPE_LEVEL_LOW>;
+						//microchip,rx-int-gpios = <&tegra_main_gpio HDR40_PIN32_GPIO GPIO_ACTIVE_LOW>;
+						spi-max-frequency = <20000000>;
+						controller-data {
+							nvidia,enable-hw-based-cs;
+							nvidia,cs-setup-clk-count = <0x1e>;
+							nvidia,cs-hold-clk-count = <0x1e>;
+							nvidia,rx-clk-tap-delay = <0x1f>;
+							nvidia,tx-clk-tap-delay = <0x0>;
+						};
+					};			
+				};					
+				pinmux@2430000 {
+					mcp251xfd_spi: exp-header-pinmux {
+						/* mcp251xfd_spi1 */
+						hdr40-pin19 {
+							nvidia,pins = HDR40_PIN19;
+							nvidia,function = HDR40_SPI;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						hdr40-pin21 {
+							nvidia,pins = HDR40_PIN21;
+							nvidia,function = HDR40_SPI;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+						};
+						hdr40-pin23 {
+							nvidia,pins = HDR40_PIN23;
+							nvidia,function = HDR40_SPI;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						/* HDR40_SPI.cs0 */
+						hdr40-pin24 {
+							nvidia,pins = HDR40_PIN24;
+							nvidia,function = HDR40_SPI;
+							nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						/* HDR40_SPI.cs1 */
+						hdr40-pin26 {
+							nvidia,pins = HDR40_PIN26;
+							nvidia,function = HDR40_SPI;
+							nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						/* mcp251xfd_spi3 */
+						hdr40-pin37 {
+							nvidia,pins = HDR40_PIN37;
+							nvidia,function = HDR40_SPI_3;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						hdr40-pin22 {
+							nvidia,pins = HDR40_PIN22;
+							nvidia,function = HDR40_SPI_3;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_ENABLE>;
+						};
+						hdr40-pin13 {
+							nvidia,pins = HDR40_PIN13;
+							nvidia,function = HDR40_SPI_3;
+							nvidia,pull = <TEGRA_PIN_PULL_DOWN>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						/* HDR40_SPI.cs0 */
+						hdr40-pin16 {
+							nvidia,pins = HDR40_PIN16;
+							nvidia,function = HDR40_SPI_3;
+							nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};
+						/* HDR40_SPI.cs1 */
+						hdr40-pin18 {
+							nvidia,pins = HDR40_PIN18;
+							nvidia,function = HDR40_SPI_3;
+							nvidia,pull = <TEGRA_PIN_PULL_NONE>;
+							nvidia,tristate = <TEGRA_PIN_DISABLE>;
+							nvidia,enable-input = <TEGRA_PIN_DISABLE>;
+						};				
+					};
+				};
+				tegra_main_gpio:gpio@2200000 {
+					mcp2518fd_int_1 {
+						gpio-hog;
+						input;
+						gpios = <HDR40_PIN12_GPIO 0>;
+						label = "mcp2518fd_int_1";
+					};
+
+					mcp2518fd_int_2 {
+						gpio-hog;
+						input;
+						gpios = <HDR40_PIN15_GPIO 0>;
+						label = "mcp2518fd_int_2";
+					};
+					/*mcp2518fd_rx_int_1 {
+						gpio-hog;
+						input;
+						gpios = <HDR40_PIN31_GPIO 0>;
+						label = "mcp2518fd_rx_int_1";
+					};
+					mcp2518fd_rx_int_2 {
+						gpio-hog;
+						input;
+						gpios = <HDR40_PIN32_GPIO 0>;
+						label = "mcp2518fd_rx_int_2";
+					};*/							
+				};	
+
+			};
+
+		};
+	};
+};

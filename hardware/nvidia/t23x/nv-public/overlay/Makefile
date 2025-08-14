@@ -65,6 +65,7 @@ dtbo-y += tegra234-p3767-camera-p3768-imx219-A.dtbo
 dtbo-y += tegra234-p3767-camera-p3768-imx219-imx477.dtbo
 dtbo-y += tegra234-p3767-camera-p3768-imx477-C.dtbo
 dtbo-y += tegra234-p3767-camera-p3768-imx477-A.dtbo
+dtbo-y += nano_mcp251xfd_overlay.dtbo
 
 ifneq ($(dtb-y),)
 dtb-y := $(addprefix $(makefile-path)/,$(dtb-y))
